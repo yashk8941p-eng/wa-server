@@ -1,0 +1,718 @@
+name: Auto Build WA Saver APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Generate Clean Project Structure & Code
+        run: |
+          rm -rf app settings.gradle build.gradle
+          mkdir -p app/src/main/java/com/myapps/wasaver
+
+          cat << 'EOF' > settings.gradle
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "WASaver"
+          include ':app'
+          EOF
+
+          cat << 'EOF' > app/build.gradle
+          plugins {
+              id 'com.android.application' version '8.2.2'
+              id 'org.jetbrains.kotlin.android' version '1.9.22'
+          }
+
+          android {
+              namespace 'com.myapps.wasaver'
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId "com.myapps.wasaver"
+                  minSdk 24
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
+              }
+
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                  }
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = '17'
+              }
+          }
+
+          dependencies {
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+              <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+              <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+
+              <application
+                  android:allowBackup="true"
+                  android:label="WA Everything Saver"
+                  android:requestLegacyExternalStorage="true"
+                  android:theme="@android:style/Theme.Material.NoActionBar">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".WhatsAppCatcherService"
+                      android:label="WA Everything Saver"
+                      android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.service.notification.NotificationListenerService" />
+                      </intent-filter>
+                  </service>
+
+              </application>
+          </manifest>
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/myapps/wasaver/WhatsAppCatcherService.kt
+          package com.myapps.wasaver
+
+          import android.app.Notification
+          import android.graphics.Bitmap
+          import android.os.Build
+          import android.os.Environment
+          import android.os.FileObserver
+          import android.os.Handler
+          import android.os.Looper
+          import android.service.notification.NotificationListenerService
+          import android.service.notification.StatusBarNotification
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.io.File
+          import java.io.FileOutputStream
+          import java.text.SimpleDateFormat
+          import java.util.*
+
+          @Suppress("DEPRECATION")
+          class MediaFolderWatcher(
+              private val watchPath: String,
+              private val backupDir: File
+          ) : FileObserver(watchPath, CREATE or MOVED_TO) {
+
+              override fun onEvent(event: Int, path: String?) {
+                  if (path == null || path.startsWith(".")) return
+                  val source = File(watchPath, path)
+                  if (source.exists() && source.isFile) {
+                      try {
+                          val dest = File(backupDir, source.name)
+                          if (!dest.exists() || dest.length() != source.length()) {
+                              source.copyTo(dest, overwrite = true)
+                          }
+                      } catch (_: Exception) {}
+                  }
+              }
+          }
+
+          class WhatsAppCatcherService : NotificationListenerService() {
+
+              private val watchers = mutableListOf<MediaFolderWatcher>()
+              private val handler = Handler(Looper.getMainLooper())
+
+              override fun onCreate() {
+                  super.onCreate()
+                  setupMediaWatchers()
+              }
+
+              private fun getBackupMediaDir(): File {
+                  val dir = File(getExternalFilesDir(null), "SavedMedia")
+                  if (!dir.exists()) dir.mkdirs()
+                  return dir
+              }
+
+              private fun getWhatsAppMediaDirs(): List<File> {
+                  val root = Environment.getExternalStorageDirectory().absolutePath
+                  val paths = listOf(
+                      "$root/Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images",
+                      "$root/Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Video",
+                      "$root/Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Audio",
+                      "$root/Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Voice Notes",
+                      "$root/WhatsApp/Media/WhatsApp Images",
+                      "$root/WhatsApp/Media/WhatsApp Video",
+                      "$root/WhatsApp/Media/WhatsApp Audio",
+                      "$root/WhatsApp/Media/WhatsApp Voice Notes"
+                  )
+                  return paths.map { File(it) }.filter { it.exists() }
+              }
+
+              private fun setupMediaWatchers() {
+                  val backupDir = getBackupMediaDir()
+                  for (dir in getWhatsAppMediaDirs()) {
+                      val watcher = MediaFolderWatcher(dir.absolutePath, backupDir)
+                      watcher.startWatching()
+                      watchers.add(watcher)
+                  }
+              }
+
+              private fun backupRecentWhatsAppFiles() {
+                  Thread {
+                      try {
+                          val backupDir = getBackupMediaDir()
+                          val now = System.currentTimeMillis()
+                          val twoMinsAgo = now - (2 * 60 * 1000)
+
+                          for (dir in getWhatsAppMediaDirs()) {
+                              dir.walkTopDown().maxDepth(2).forEach { file ->
+                                  if (file.isFile && !file.name.startsWith(".") && file.lastModified() >= twoMinsAgo) {
+                                      val dest = File(backupDir, file.name)
+                                      if (!dest.exists() || dest.length() != file.length()) {
+                                          file.copyTo(dest, overwrite = true)
+                                      }
+                                  }
+                              }
+                          }
+                      } catch (_: Exception) {}
+                  }.start()
+              }
+
+              override fun onNotificationPosted(sbn: StatusBarNotification?) {
+                  if (sbn == null) return
+                  val pkg = sbn.packageName
+                  if (pkg != "com.whatsapp" && pkg != "com.whatsapp.w4b") return
+
+                  val extras = sbn.notification.extras
+                  val sender = extras.getString(Notification.EXTRA_TITLE) ?: return
+                  val text = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString() ?: ""
+
+                  if (sender == "WhatsApp" ||
+                      text.contains("new messages") ||
+                      text == "Checking for new messages" ||
+                      text.contains("Backup in progress")) {
+                      return
+                  }
+
+                  backupRecentWhatsAppFiles()
+                  handler.postDelayed({ backupRecentWhatsAppFiles() }, 1500)
+                  handler.postDelayed({ backupRecentWhatsAppFiles() }, 4000)
+
+                  if (text == "This message was deleted" || text == "You deleted this message") {
+                      markLatestMessageDeleted(sender)
+                      return
+                  }
+
+                  var thumbPath = ""
+                  val bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                      extras.getParcelable(Notification.EXTRA_PICTURE, Bitmap::class.java)
+                  } else {
+                      @Suppress("DEPRECATION")
+                      extras.getParcelable(Notification.EXTRA_PICTURE) as? Bitmap
+                  }
+
+                  if (bitmap != null) {
+                      thumbPath = saveNotificationBitmap(bitmap)
+                  }
+
+                  saveMessageLog(sender, text, thumbPath)
+              }
+
+              private fun saveNotificationBitmap(bitmap: Bitmap): String {
+                  return try {
+                      val dir = getBackupMediaDir()
+                      val file = File(dir, "NOTIF_IMG_${System.currentTimeMillis()}.jpg")
+                      FileOutputStream(file).use { out ->
+                          bitmap.compress(Bitmap.CompressFormat.JPEG, 92, out)
+                      }
+                      file.absolutePath
+                  } catch (e: Exception) {
+                      ""
+                  }
+              }
+
+              private fun saveMessageLog(sender: String, message: String, thumbPath: String) {
+                  val prefs = getSharedPreferences("WA_SAVER_DB", MODE_PRIVATE)
+                  val arr = JSONArray(prefs.getString("chat_logs", "[]"))
+
+                  if (arr.length() > 0) {
+                      val top = arr.getJSONObject(0)
+                      if (top.optString("sender") == sender && top.optString("message") == message) {
+                          return
+                      }
+                  }
+
+                  val time = SimpleDateFormat("dd MMM, hh:mm:ss a", Locale.getDefault()).format(Date())
+                  val obj = JSONObject().apply {
+                      put("sender", sender)
+                      put("message", message)
+                      put("time", time)
+                      put("thumb", thumbPath)
+                      put("deleted", false)
+                  }
+
+                  val updated = JSONArray().put(obj)
+                  val limit = minOf(arr.length(), 500)
+                  for (i in 0 until limit) {
+                      updated.put(arr.getJSONObject(i))
+                  }
+
+                  prefs.edit().putString("chat_logs", updated.toString()).apply()
+              }
+
+              private fun markLatestMessageDeleted(sender: String) {
+                  val prefs = getSharedPreferences("WA_SAVER_DB", MODE_PRIVATE)
+                  val arr = JSONArray(prefs.getString("chat_logs", "[]"))
+                  for (i in 0 until arr.length()) {
+                      val obj = arr.getJSONObject(i)
+                      if (obj.optString("sender") == sender && !obj.optBoolean("deleted", false)) {
+                          obj.put("deleted", true)
+                          break
+                      }
+                  }
+                  prefs.edit().putString("chat_logs", arr.toString()).apply()
+              }
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/myapps/wasaver/MainActivity.kt
+          package com.myapps.wasaver
+
+          import android.Manifest
+          import android.app.Activity
+          import android.app.AlertDialog
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.graphics.BitmapFactory
+          import android.graphics.Color
+          import android.graphics.Typeface
+          import android.media.MediaPlayer
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Bundle
+          import android.os.Environment
+          import android.provider.Settings
+          import android.view.Gravity
+          import android.view.ViewGroup
+          import android.widget.*
+          import org.json.JSONArray
+          import java.io.File
+          import java.text.SimpleDateFormat
+          import java.util.*
+
+          class MainActivity : Activity() {
+
+              private lateinit var contentContainer: LinearLayout
+              private lateinit var statusBanner: LinearLayout
+              private var currentTab = 0
+              private var mediaPlayer: MediaPlayer? = null
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+
+                  val root = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setBackgroundColor(Color.parseColor("#0B141A"))
+                      layoutParams = ViewGroup.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          ViewGroup.LayoutParams.MATCH_PARENT
+                      )
+                  }
+
+                  val header = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      setBackgroundColor(Color.parseColor("#202C33"))
+                      setPadding(40, 45, 40, 45)
+                      gravity = Gravity.CENTER_VERTICAL
+                  }
+
+                  val title = TextView(this).apply {
+                      text = "🛡️ WA Anti-Delete Saver"
+                      textSize = 20f
+                      setTextColor(Color.WHITE)
+                      typeface = Typeface.DEFAULT_BOLD
+                      layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                  }
+
+                  val refreshBtn = Button(this).apply {
+                      text = "🔄 Refresh"
+                      setTextColor(Color.WHITE)
+                      setBackgroundColor(Color.parseColor("#00A884"))
+                      setOnClickListener { renderCurrentTab() }
+                  }
+
+                  header.addView(title)
+                  header.addView(refreshBtn)
+                  root.addView(header)
+
+                  statusBanner = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(30, 20, 30, 10)
+                  }
+                  root.addView(statusBanner)
+
+                  val tabBar = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      setBackgroundColor(Color.parseColor("#202C33"))
+                  }
+
+                  val tabChats = Button(this).apply {
+                      text = "💬 Saved Chats"
+                      setTextColor(Color.WHITE)
+                      setBackgroundColor(Color.parseColor("#00A884"))
+                      layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                  }
+
+                  val tabMedia = Button(this).apply {
+                      text = "📸 Photos & Voice"
+                      setTextColor(Color.LTGRAY)
+                      setBackgroundColor(Color.parseColor("#202C33"))
+                      layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                  }
+
+                  tabChats.setOnClickListener {
+                      currentTab = 0
+                      tabChats.setBackgroundColor(Color.parseColor("#00A884"))
+                      tabMedia.setBackgroundColor(Color.parseColor("#202C33"))
+                      renderCurrentTab()
+                  }
+
+                  tabMedia.setOnClickListener {
+                      currentTab = 1
+                      tabMedia.setBackgroundColor(Color.parseColor("#00A884"))
+                      tabChats.setBackgroundColor(Color.parseColor("#202C33"))
+                      renderCurrentTab()
+                  }
+
+                  tabBar.addView(tabChats)
+                  tabBar.addView(tabMedia)
+                  root.addView(tabBar)
+
+                  val scrollView = ScrollView(this).apply {
+                      layoutParams = LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          0,
+                          1f
+                      )
+                  }
+
+                  contentContainer = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(30, 30, 30, 80)
+                  }
+
+                  scrollView.addView(contentContainer)
+                  root.addView(scrollView)
+
+                  setContentView(root)
+              }
+
+              override fun onResume() {
+                  super.onResume()
+                  updatePermissionBanner()
+                  renderCurrentTab()
+              }
+
+              private fun isNotificationServiceEnabled(): Boolean {
+                  val flat = Settings.Secure.getString(contentResolver, "enabled_notification_listeners")
+                  return flat != null && flat.contains(packageName)
+              }
+
+              private fun hasStorageAccess(): Boolean {
+                  return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                      Environment.isExternalStorageManager()
+                  } else {
+                      checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+                  }
+              }
+
+              private fun updatePermissionBanner() {
+                  statusBanner.removeAllViews()
+
+                  if (!isNotificationServiceEnabled()) {
+                      val btn = Button(this).apply {
+                          text = "⚠️ Step 1: Enable Notification Access (Tap Here)"
+                          setBackgroundColor(Color.parseColor("#D93025"))
+                          setTextColor(Color.WHITE)
+                          setOnClickListener {
+                              startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"))
+                          }
+                      }
+                      statusBanner.addView(btn)
+                  }
+
+                  if (!hasStorageAccess()) {
+                      val btn = Button(this).apply {
+                          text = "⚠️ Step 2: Allow All Files Access for Photos (Tap Here)"
+                          setBackgroundColor(Color.parseColor("#E37400"))
+                          setTextColor(Color.WHITE)
+                          setOnClickListener {
+                              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                                  val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                                  intent.data = Uri.parse("package:$packageName")
+                                  startActivity(intent)
+                              } else {
+                                  requestPermissions(
+                                      arrayOf(
+                                          Manifest.permission.READ_EXTERNAL_STORAGE,
+                                          Manifest.permission.WRITE_EXTERNAL_STORAGE
+                                      ), 101
+                                  )
+                              }
+                          }
+                      }
+                      statusBanner.addView(btn)
+                  }
+              }
+
+              private fun renderCurrentTab() {
+                  contentContainer.removeAllViews()
+                  if (currentTab == 0) {
+                      renderChatsList()
+                  } else {
+                      renderMediaList()
+                  }
+              }
+
+              private fun renderChatsList() {
+                  val prefs = getSharedPreferences("WA_SAVER_DB", MODE_PRIVATE)
+                  val arr = JSONArray(prefs.getString("chat_logs", "[]"))
+
+                  if (arr.length() == 0) {
+                      val empty = TextView(this).apply {
+                          text = "Abhi koi message record nahi hua hai.\n\nUpar dono permissions ON karein. Ab jab bhi koi WhatsApp message bhej kar delete karega, wo yahan dikhega!"
+                          setTextColor(Color.GRAY)
+                          textSize = 15f
+                          setPadding(20, 80, 20, 20)
+                          gravity = Gravity.CENTER
+                      }
+                      contentContainer.addView(empty)
+                      return
+                  }
+
+                  for (i in 0 until arr.length()) {
+                      val obj = arr.getJSONObject(i)
+                      val sender = obj.optString("sender")
+                      val msg = obj.optString("message")
+                      val time = obj.optString("time")
+                      val thumb = obj.optString("thumb")
+                      val isDeleted = obj.optBoolean("deleted", false)
+
+                      val card = LinearLayout(this).apply {
+                          orientation = LinearLayout.VERTICAL
+                          setBackgroundColor(Color.parseColor("#202C33"))
+                          setPadding(35, 30, 35, 30)
+                          val params = LinearLayout.LayoutParams(
+                              ViewGroup.LayoutParams.MATCH_PARENT,
+                              ViewGroup.LayoutParams.WRAP_CONTENT
+                          )
+                          params.setMargins(0, 0, 0, 25)
+                          layoutParams = params
+                      }
+
+                      if (isDeleted) {
+                          val badge = TextView(this).apply {
+                              text = "🗑️ DELETED BY SENDER"
+                              setTextColor(Color.parseColor("#FF6B6B"))
+                              textSize = 12f
+                              typeface = Typeface.DEFAULT_BOLD
+                          }
+                          card.addView(badge)
+                      }
+
+                      val senderTv = TextView(this).apply {
+                          text = sender
+                          setTextColor(Color.parseColor("#00A884"))
+                          textSize = 17f
+                          typeface = Typeface.DEFAULT_BOLD
+                      }
+
+                      val msgTv = TextView(this).apply {
+                          text = msg
+                          setTextColor(Color.WHITE)
+                          textSize = 16f
+                          setPadding(0, 10, 0, 10)
+                      }
+
+                      val timeTv = TextView(this).apply {
+                          text = time
+                          setTextColor(Color.GRAY)
+                          textSize = 12f
+                          gravity = Gravity.END
+                      }
+
+                      card.addView(senderTv)
+                      card.addView(msgTv)
+
+                      if (thumb.isNotEmpty() && File(thumb).exists()) {
+                          val imgView = ImageView(this).apply {
+                              val bmp = BitmapFactory.decodeFile(thumb)
+                              setImageBitmap(bmp)
+                              adjustViewBounds = true
+                              maxHeight = 450
+                              setPadding(0, 15, 0, 15)
+                              setOnClickListener { showFullImageDialog(File(thumb)) }
+                          }
+                          card.addView(imgView)
+                      }
+
+                      card.addView(timeTv)
+                      contentContainer.addView(card)
+                  }
+              }
+
+              private fun renderMediaList() {
+                  val dir = File(getExternalFilesDir(null), "SavedMedia")
+                  val files = dir.listFiles()?.sortedByDescending { it.lastModified() } ?: emptyList()
+
+                  if (files.isEmpty()) {
+                      val empty = TextView(this).apply {
+                          text = "Abhi koi Photo, Video ya Voice Note backup nahi hua hai.\n\nWhatsApp Settings > Storage and Data > Media Auto-Download ON rakhein taaki aane wali har photo/audio turant save ho sake."
+                          setTextColor(Color.GRAY)
+                          textSize = 15f
+                          setPadding(20, 80, 20, 20)
+                          gravity = Gravity.CENTER
+                      }
+                      contentContainer.addView(empty)
+                      return
+                  }
+
+                  for (file in files) {
+                      val card = LinearLayout(this).apply {
+                          orientation = LinearLayout.VERTICAL
+                          setBackgroundColor(Color.parseColor("#202C33"))
+                          setPadding(35, 30, 35, 30)
+                          val params = LinearLayout.LayoutParams(
+                              ViewGroup.LayoutParams.MATCH_PARENT,
+                              ViewGroup.LayoutParams.WRAP_CONTENT
+                          )
+                          params.setMargins(0, 0, 0, 25)
+                          layoutParams = params
+                      }
+
+                      val dateStr = SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault())
+                          .format(Date(file.lastModified()))
+
+                      val nameTv = TextView(this).apply {
+                          text = "${file.name}  ($dateStr)"
+                          setTextColor(Color.LTGRAY)
+                          textSize = 13f
+                      }
+                      card.addView(nameTv)
+
+                      val lower = file.name.lowercase()
+                      if (lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png") || lower.endsWith(".webp")) {
+                          val img = ImageView(this).apply {
+                              val opts = BitmapFactory.Options().apply { inSampleSize = 2 }
+                              setImageBitmap(BitmapFactory.decodeFile(file.absolutePath, opts))
+                              adjustViewBounds = true
+                              maxHeight = 550
+                              setPadding(0, 20, 0, 10)
+                              setOnClickListener { showFullImageDialog(file) }
+                          }
+                          card.addView(img)
+                      } else if (lower.endsWith(".opus") || lower.endsWith(".mp3") || lower.endsWith(".m4a") || lower.endsWith(".aac")) {
+                          val playBtn = Button(this).apply {
+                              text = "▶️ Play Voice Note / Audio"
+                              setBackgroundColor(Color.parseColor("#00A884"))
+                              setTextColor(Color.WHITE)
+                              setOnClickListener { playAudioFile(file) }
+                          }
+                          card.addView(playBtn)
+                      } else {
+                          val info = TextView(this).apply {
+                              text = "🎬 Video Saved (${file.length() / 1024} KB)\nPath: ${file.absolutePath}"
+                              setTextColor(Color.WHITE)
+                              setPadding(0, 15, 0, 10)
+                          }
+                          card.addView(info)
+                      }
+
+                      contentContainer.addView(card)
+                  }
+              }
+
+              private fun showFullImageDialog(file: File) {
+                  val img = ImageView(this).apply {
+                      setImageBitmap(BitmapFactory.decodeFile(file.absolutePath))
+                      adjustViewBounds = true
+                  }
+                  AlertDialog.Builder(this)
+                      .setTitle(file.name)
+                      .setView(img)
+                      .setPositiveButton("Close", null)
+                      .show()
+              }
+
+              private fun playAudioFile(file: File) {
+                  try {
+                      mediaPlayer?.release()
+                      mediaPlayer = MediaPlayer().apply {
+                          setDataSource(file.absolutePath)
+                          prepare()
+                          start()
+                      }
+                      Toast.makeText(this, "Playing: ${file.name}", Toast.LENGTH_SHORT).show()
+                  } catch (e: Exception) {
+                      Toast.makeText(this, "Cannot play audio: ${e.message}", Toast.LENGTH_SHORT).show()
+                  }
+              }
+
+              override fun onDestroy() {
+                  super.onDestroy()
+                  mediaPlayer?.release()
+              }
+          }
+          EOF
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.5'
+
+      - name: Build Debug APK
+        run: gradle assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: WA-Everything-Saver-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
